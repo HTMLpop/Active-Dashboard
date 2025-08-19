@@ -42,6 +42,7 @@ def check_link_with_retry(url, retries=2):
             return (url, str(e))
 
 def run_checker():
+    print("✅ Starting link check")
     df = pd.read_excel(EXCEL_INPUT, engine='openpyxl')
     all_links = pd.concat([df[col].dropna() for col in COLUMNS_TO_SCAN])
     unique_links = all_links.unique()

@@ -24,7 +24,7 @@ jobs:
         run: pip install pandas openpyxl requests
 
       - name: Run link checker
-        run: python check_links_fixed.py
+        run: python check_links_enhanced.py
 
       - name: Commit results
         run: |

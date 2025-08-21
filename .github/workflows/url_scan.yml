@@ -39,14 +39,47 @@ jobs:
 
       - name: Install deps
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
+
+      - name: Locate input Excel
+        id: find_input
+        run: |
+          set -euo pipefail
+          echo "Repo tree (top level):"
+          ls -alh || true
+          echo "Searching for combined_master_with_urls.xlsx ..."
+          FOUND="$(git ls-files | grep -i -m1 'combined_master_with_urls\.xlsx' || true)"
+          if [ -z "$FOUND" ]; then
+            echo "❌ Could not find combined_master_with_urls.xlsx in repo. Place it under data/ or update URL_INPUT_PATH."
+            exit 1
+          fi
+          echo "Found: $FOUND"
+          echo "URL_INPUT_PATH=$FOUND" >> $GITHUB_ENV
+
+      - name: Sanity check Python environment
+        run: |
+          python - << 'PY'
+          import sys, pandas, aiohttp, openpyxl
+          print("Python:", sys.version)
+          print("pandas:", pandas.__version__, "aiohttp:", aiohttp.__version__, "openpyxl:", openpyxl.__version__)
+          PY
+
+      - name: Verify input file can be read
+        run: |
+          python - << 'PY'
+          import os, pandas as pd
+          path=os.environ['URL_INPUT_PATH']
+          print("Reading:", path)
+          df=pd.read_excel(path)
+          print("Loaded shape:", df.shape)
+          print("Columns:", list(df.columns)[:20])
+          PY
 
       - name: Run URL checker
         env:
           MATRIX_SHARD: ${{ matrix.shard }}
           MATRIX_TOTAL: 4
-          URL_INPUT_PATH: active-dashboard/combined_master_with_urls.xlsx  # <-- update if your path differs
           URL_INPUT_SHEET: ''
           URL_OUTPUT_DIR: artifacts
           URL_CONCURRENCY: '100'
@@ -54,6 +87,7 @@ jobs:
           URL_RETRIES: '2'
           URL_WRITE_ENRICHED: '1'
         run: |
+          mkdir -p artifacts
           python scripts/check_urls.py \
             --input "$URL_INPUT_PATH" \
             --sheet "$URL_INPUT_SHEET" \

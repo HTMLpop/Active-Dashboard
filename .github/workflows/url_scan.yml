@@ -30,7 +30,7 @@ pip install -r requirements.txt
 env:
 MATRIX_SHARD: ${{ matrix.shard }}
 MATRIX_TOTAL: 4
-URL_INPUT_PATH: data/combined_master_with_urls.xlsx # <-- update if your path differs
+URL_INPUT_PATH: active-dashboard/combined_master_with_urls.xlsx 
 URL_INPUT_SHEET: ''
 URL_OUTPUT_DIR: artifacts
 URL_CONCURRENCY: '100'

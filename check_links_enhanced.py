@@ -1,86 +1,56 @@
 import pandas as pd
 import requests
-import time
 import json
-from openpyxl import load_workbook
-from requests.exceptions import SSLError, ConnectionError
+import urllib3
+from requests.exceptions import RequestException, SSLError, Timeout, ConnectionError
+from urllib3.exceptions import InsecureRequestWarning
 
-# Load Excel file
-excel_file = 'combined_master_with_urls.xlsx'
-df = pd.read_excel(excel_file)
+# Suppress only the single InsecureRequestWarning
+urllib3.disable_warnings(category=InsecureRequestWarning)
 
-# Clean up column name
-df.columns = df.columns.str.strip()
-url_col = next((col for col in df.columns if 'url' in col.lower()), None)
+# Load your Excel file
+INPUT_FILE = "combined_master_with_urls.xlsx"
+OUTPUT_EXCEL = "broken_links.xlsx"
+OUTPUT_JSON = "broken_links.json"
+TIMEOUT = 10  # seconds
 
-if not url_col:
-    raise Exception("No URL column found in the spreadsheet.")
+# Read Excel data
+df = pd.read_excel(INPUT_FILE)
 
-# Track broken links
-broken_links = []
-link_status_map = {}
+# Ensure 'Link' column exists
+if 'Link' not in df.columns:
+    raise ValueError("The Excel file must have a column named 'Link'.")
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/115.0.0.0 Safari/537.36"
-}
+# Keep track of URL status
+link_status = {}
 
-print(f"Checking {len(df)} URLs...\n")
-
-for index, row in df.iterrows():
-    url = row[url_col]
-    if pd.isna(url) or not isinstance(url, str) or not url.startswith('http'):
+# Check each URL
+for i, url in enumerate(df['Link']):
+    if pd.isna(url) or not isinstance(url, str):
+        link_status[url] = "broken"
         continue
 
+    print(f"Checking ({i + 1}/{len(df)}): {url}")
     try:
-        response = requests.get(url, headers=headers, timeout=10, verify=True)
-        status = response.status_code
-
-        # Allow some codes that still return content
-        if status in [200, 301, 302]:
-            link_status_map[url] = "working"
+        response = requests.head(url, allow_redirects=True, timeout=TIMEOUT, verify=False)
+        if response.status_code >= 400:
+            # Retry with GET to avoid false positives
+            response = requests.get(url, allow_redirects=True, timeout=TIMEOUT, verify=False)
+        
+        if response.status_code < 400:
+            link_status[url] = "working"
         else:
-            link_status_map[url] = "broken"
-            broken_links.append({
-                'Row': index + 2,
-                'URL': url,
-                'Status': status,
-                'Reason': f"Unexpected HTTP status: {status}"
-            })
-
-    except SSLError as ssl_err:
-        link_status_map[url] = "working"  # Assume working due to cert issue
-    except ConnectionError as conn_err:
-        link_status_map[url] = "broken"
-        broken_links.append({
-            'Row': index + 2,
-            'URL': url,
-            'Status': 'Error',
-            'Reason': 'Connection failed'
-        })
-    except Exception as e:
-        link_status_map[url] = "broken"
-        broken_links.append({
-            'Row': index + 2,
-            'URL': url,
-            'Status': 'Error',
-            'Reason': str(e)
-        })
-
-    # Throttle to avoid site bans
-    time.sleep(0.25)
+            link_status[url] = "broken"
+    except (RequestException, SSLError, Timeout, ConnectionError):
+        link_status[url] = "broken"
 
 # Save broken links to Excel
-if broken_links:
-    df_broken = pd.DataFrame(broken_links)
-    df_broken.to_excel("broken_links.xlsx", index=False)
-    print(f"\n🔴 {len(broken_links)} broken links saved to broken_links.xlsx")
-else:
-    print("\n🟢 No broken links found.")
+broken_links = [url for url, status in link_status.items() if status == "broken"]
+df_broken = df[df['Link'].isin(broken_links)]
+df_broken.to_excel(OUTPUT_EXCEL, index=False)
 
-# Save full status map to JSON
-with open("broken_links.json", "w") as json_file:
-    json.dump(link_status_map, json_file, indent=2)
+# Save status to JSON
+with open(OUTPUT_JSON, 'w') as f:
+    json.dump(link_status, f, indent=2)
 
-print("📝 Link status JSON saved to broken_links.json")
+print("✅ Done. Broken links saved to:", OUTPUT_EXCEL, "and", OUTPUT_JSON)

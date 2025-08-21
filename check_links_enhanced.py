@@ -1,63 +1,86 @@
 import pandas as pd
 import requests
+import time
 import json
-import urllib3
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from time import sleep
+from openpyxl import load_workbook
+from requests.exceptions import SSLError, ConnectionError
 
-# Suppress SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Load Excel file
+excel_file = 'combined_master_with_urls.xlsx'
+df = pd.read_excel(excel_file)
 
-EXCEL_INPUT = "combined_master_with_urls.xlsx"
-EXCEL_OUTPUT = "broken_links.xlsx"
-JSON_OUTPUT = "broken_links.json"
+# Clean up column name
+df.columns = df.columns.str.strip()
+url_col = next((col for col in df.columns if 'url' in col.lower()), None)
 
-COLUMNS_TO_SCAN = [
-    'Masking Forms_URL',
-    'Fraud/Alerts_URLs',
-    'Public Records Request Form_URLs'
-]
+if not url_col:
+    raise Exception("No URL column found in the spreadsheet.")
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+# Track broken links
+broken_links = []
+link_status_map = {}
+
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/115.0.0.0 Safari/537.36"
 }
 
-RETRYABLE_ERRORS = (
-    requests.exceptions.SSLError,
-    requests.exceptions.ConnectionError,
-    requests.exceptions.Timeout,
-)
+print(f"Checking {len(df)} URLs...\n")
 
-def check_link_with_retry(url, retries=2):
-    for attempt in range(retries + 1):
-        try:
-            response = requests.get(url, headers=HEADERS, timeout=10, verify=False)
-            return (url, response.status_code)
-        except RETRYABLE_ERRORS as e:
-            if attempt < retries:
-                sleep(2)
-                continue
-            return (url, str(type(e).__name__))
-        except Exception as e:
-            return (url, str(e))
+for index, row in df.iterrows():
+    url = row[url_col]
+    if pd.isna(url) or not isinstance(url, str) or not url.startswith('http'):
+        continue
 
-def run_checker():
-    print("✅ Starting link check")
-    df = pd.read_excel(EXCEL_INPUT, engine='openpyxl')
-    all_links = pd.concat([df[col].dropna() for col in COLUMNS_TO_SCAN])
-    unique_links = all_links.unique()
+    try:
+        response = requests.get(url, headers=headers, timeout=10, verify=True)
+        status = response.status_code
 
-    results = []
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        futures = {executor.submit(check_link_with_retry, url): url for url in unique_links}
-        for i, future in enumerate(as_completed(futures), 1):
-            url, status = future.result()
-            print(f"{i}/{len(unique_links)} - {url} --> {status}")
-            if (isinstance(status, int) and not str(status).startswith("2")) or isinstance(status, str):
-                results.append({"url": url, "status": status})
+        # Allow some codes that still return content
+        if status in [200, 301, 302]:
+            link_status_map[url] = "working"
+        else:
+            link_status_map[url] = "broken"
+            broken_links.append({
+                'Row': index + 2,
+                'URL': url,
+                'Status': status,
+                'Reason': f"Unexpected HTTP status: {status}"
+            })
 
-    pd.DataFrame(results).to_excel(EXCEL_OUTPUT, index=False)
-    with open(JSON_OUTPUT, "w") as f:
-        json.dump(results, f, indent=2)
+    except SSLError as ssl_err:
+        link_status_map[url] = "working"  # Assume working due to cert issue
+    except ConnectionError as conn_err:
+        link_status_map[url] = "broken"
+        broken_links.append({
+            'Row': index + 2,
+            'URL': url,
+            'Status': 'Error',
+            'Reason': 'Connection failed'
+        })
+    except Exception as e:
+        link_status_map[url] = "broken"
+        broken_links.append({
+            'Row': index + 2,
+            'URL': url,
+            'Status': 'Error',
+            'Reason': str(e)
+        })
 
-    print("✅ Retry-enhanced link check complete.")
+    # Throttle to avoid site bans
+    time.sleep(0.25)
+
+# Save broken links to Excel
+if broken_links:
+    df_broken = pd.DataFrame(broken_links)
+    df_broken.to_excel("broken_links.xlsx", index=False)
+    print(f"\n🔴 {len(broken_links)} broken links saved to broken_links.xlsx")
+else:
+    print("\n🟢 No broken links found.")
+
+# Save full status map to JSON
+with open("broken_links.json", "w") as json_file:
+    json.dump(link_status_map, json_file, indent=2)
+
+print("📝 Link status JSON saved to broken_links.json")

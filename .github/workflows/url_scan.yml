@@ -1,93 +1,107 @@
+# filepath: .github/workflows/url_scan.yml
 name: Weekly URL Health Check
-fail-fast: false
-matrix:
-shard: [0, 1, 2, 3]
-steps:
-- name: Checkout
-uses: actions/checkout@v4
 
+on:
+  schedule:
+    # GitHub cron uses UTC. 12:00 UTC == 7:00 AM EST
+    - cron: '0 12 * * 1'
+  workflow_dispatch: {}
 
-- name: Setup Python
-uses: actions/setup-python@v5
-with:
-python-version: '3.11'
+permissions:
+  contents: read
 
+concurrency:
+  group: url-health-check
+  cancel-in-progress: false
 
-- name: Cache pip
-uses: actions/cache@v4
-with:
-path: ~/.cache/pip
-key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+jobs:
+  scan:
+    name: Scan URLs (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-- name: Install deps
-run: |
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
 
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-- name: Run URL checker
-env:
-MATRIX_SHARD: ${{ matrix.shard }}
-MATRIX_TOTAL: 4
-URL_INPUT_PATH: active-dashboard/combined_master_with_urls.xlsx 
-URL_INPUT_SHEET: ''
-URL_OUTPUT_DIR: artifacts
-URL_CONCURRENCY: '100'
-URL_TIMEOUT: '12'
-URL_RETRIES: '2'
-URL_WRITE_ENRICHED: '1'
-run: |
-python scripts/check_urls.py \
---input "$URL_INPUT_PATH" \
---sheet "$URL_INPUT_SHEET" \
---output-dir "$URL_OUTPUT_DIR" \
---concurrency "$URL_CONCURRENCY" \
---timeout "$URL_TIMEOUT" \
---retries "$URL_RETRIES"
+      - name: Run URL checker
+        env:
+          MATRIX_SHARD: ${{ matrix.shard }}
+          MATRIX_TOTAL: 4
+          URL_INPUT_PATH: active-dashboard/combined_master_with_urls.xlsx  # <-- update if your path differs
+          URL_INPUT_SHEET: ''
+          URL_OUTPUT_DIR: artifacts
+          URL_CONCURRENCY: '100'
+          URL_TIMEOUT: '12'
+          URL_RETRIES: '2'
+          URL_WRITE_ENRICHED: '1'
+        run: |
+          python scripts/check_urls.py \
+            --input "$URL_INPUT_PATH" \
+            --sheet "$URL_INPUT_SHEET" \
+            --output-dir "$URL_OUTPUT_DIR" \
+            --concurrency "$URL_CONCURRENCY" \
+            --timeout "$URL_TIMEOUT" \
+            --retries "$URL_RETRIES"
 
+      - name: Upload artifacts (per shard)
+        uses: actions/upload-artifact@v4
+        with:
+          name: url-scan-results-shard-${{ matrix.shard }}
+          path: artifacts/*.csv
+          if-no-files-found: error
 
-- name: Upload artifacts (per shard)
-uses: actions/upload-artifact@v4
-with:
-name: url-scan-results-shard-${{ matrix.shard }}
-path: artifacts/*.csv
-if-no-files-found: error
-
-
-collate:
-name: Collate results
-needs: scan
-runs-on: ubuntu-latest
-steps:
-- uses: actions/checkout@v4
-- uses: actions/setup-python@v5
-with:
-python-version: '3.11'
-- name: Download all artifacts
-uses: actions/download-artifact@v4
-with:
-path: artifacts_all
-- name: Collate CSVs
-run: |
-python - << 'PY'
-import os, glob, pandas as pd
-os.makedirs('artifacts', exist_ok=True)
-all_df = []
-broken_df = []
-for p in glob.glob('artifacts_all/**/url_check_results_shard*.csv', recursive=True):
-all_df.append(pd.read_csv(p))
-for p in glob.glob('artifacts_all/**/broken_urls_shard*.csv', recursive=True):
-broken_df.append(pd.read_csv(p))
-if all_df:
-pd.concat(all_df, ignore_index=True).to_csv('artifacts/url_check_results.csv', index=False)
-if broken_df:
-pd.concat(broken_df, ignore_index=True).drop_duplicates(subset=['url']).to_csv('artifacts/broken_urls.csv', index=False)
-print('Wrote artifacts/url_check_results.csv and artifacts/broken_urls.csv')
-PY
-- name: Upload final artifacts
-uses: actions/upload-artifact@v4
-with:
-name: url-scan-results-final
-path: artifacts/*.csv
-if-no-files-found: error
+  collate:
+    name: Collate results
+    needs: scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts_all
+      - name: Collate CSVs
+        run: |
+          python - << 'PY'
+          import os, glob, pandas as pd
+          os.makedirs('artifacts', exist_ok=True)
+          all_df = []
+          broken_df = []
+          for p in glob.glob('artifacts_all/**/url_check_results_shard*.csv', recursive=True):
+              all_df.append(pd.read_csv(p))
+          for p in glob.glob('artifacts_all/**/broken_urls_shard*.csv', recursive=True):
+              broken_df.append(pd.read_csv(p))
+          if all_df:
+              pd.concat(all_df, ignore_index=True).to_csv('artifacts/url_check_results.csv', index=False)
+          if broken_df:
+              pd.concat(broken_df, ignore_index=True).drop_duplicates(subset=['url']).to_csv('artifacts/broken_urls.csv', index=False)
+          print('Wrote artifacts/url_check_results.csv and artifacts/broken_urls.csv')
+          PY
+      - name: Upload final artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: url-scan-results-final
+          path: artifacts/*.csv
+          if-no-files-found: error
